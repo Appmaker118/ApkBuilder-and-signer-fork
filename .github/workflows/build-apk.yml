@@ -43,23 +43,30 @@ jobs:
           cd ${{ env.projectName }}
           git checkout ${{ github.event.inputs.repo-commit }}
 
-      # FIX 1: Locate or generate a fallback gradle directory structure safely
+      # FIX 1: Search for the actual Android/Gradle framework structure deeper in subfolders
       - name: locate gradle root
         run: |
-          GRADLEW_PATH=$(find ./${{ env.projectName }} -maxdepth 4 -type f -name "gradlew" -print -quit)
-          if [ -z "$GRADLEW_PATH" ]; then
-            echo "⚠️ WARNING: 'gradlew' wrapper file not found in the cloned repository."
-            echo "Using fallback target directory: ${{ env.projectName }}${{ github.event.inputs.repo-dir }}"
-            echo "gradleRoot=${{ env.projectName }}${{ github.event.inputs.repo-dir }}" >> $GITHUB_ENV
-            echo "needsWrapper=true" >> $GITHUB_ENV
+          # Look for build.gradle or settings.gradle up to 4 folders deep
+          BUILD_FILE_PATH=$(find ./${{ env.projectName }} -maxdepth 4 -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" | head -n 1)
+          
+          if [ -z "$BUILD_FILE_PATH" ]; then
+            echo "⚠️ WARNING: No Gradle build files found. Defaulting to input directory parameters."
+            TARGET_DIR="${{ env.projectName }}${{ github.event.inputs.repo-dir }}"
           else
-            GRADLE_ROOT_DIR=$(dirname "$GRADLEW_PATH" | sed 's|^\./||')
-            echo "Found gradlew at: $GRADLE_ROOT_DIR"
-            echo "gradleRoot=$GRADLE_ROOT_DIR" >> $GITHUB_ENV
+            TARGET_DIR=$(dirname "$BUILD_FILE_PATH" | sed 's|^\./||')
+          fi
+          
+          echo "Targeting Gradle Build Root at: $TARGET_DIR"
+          echo "gradleRoot=$TARGET_DIR" >> $GITHUB_ENV
+          
+          # Determine if a wrapper script already exists inside that folder
+          if [ -f "$TARGET_DIR/gradlew" ]; then
             echo "needsWrapper=false" >> $GITHUB_ENV
+          else
+            echo "needsWrapper=true" >> $GITHUB_ENV
           fi
 
-      # FIX 2: Bypasses the workspace root validations for the internal cache runner
+      # FIX 2: Safeguard runner root to prevent early caching engine complaints
       - name: bypass root gradle validation
         run: |
           mkdir -p gradle/wrapper
@@ -93,7 +100,7 @@ jobs:
         with:
           build-root-directory: ${{ env.gradleRoot }}
 
-      # FIX 3: Automatically injects a brand new gradle runtime wrapper if the repository lacks one
+      # FIX 3: Installs the wrapper execution files inside the verified project subdirectory cleanly
       - name: inject missing gradle wrapper
         if: ${{ env.needsWrapper == 'true' }}
         run: |
