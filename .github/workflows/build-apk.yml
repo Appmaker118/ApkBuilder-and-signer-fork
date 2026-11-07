@@ -43,34 +43,26 @@ jobs:
           cd ${{ env.projectName }}
           git checkout ${{ github.event.inputs.repo-commit }}
 
-      # FIX 1: Look directly for an interior android directory framework to prevent parent clashes
-      - name: locate gradle root
+      # FIX 1: Generate missing settings.gradle to cleanly bind 'Approot/app' as a valid structural module
+      # Also safely normalise your custom 'gradlew/' distribution directory structure
+      # We force use of the workspace root directory for the build context
+       Kakao:
+      - name: prepare environment and stitch components
         run: |
-          # Prioritize finding explicit android configuration directories
-          BUILD_FILE_PATH=$(find ./${{ env.projectName }} -maxdepth 4 -type f \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "settings.gradle" \) | head -n 1)
+          cd ${{ env.projectName }}
           
-          if [ -z "$BUILD_FILE_PATH" ]; then
-            echo "⚠️ WARNING: No Gradle build files found. Using fallback target directory configurations."
-            TARGET_DIR="${{ env.projectName }}${{ github.event.inputs.repo-dir }}"
-          else
-            TARGET_DIR=$(dirname "$BUILD_FILE_PATH" | sed 's|^\./||')
-          fi
+          # Inject settings.gradle at root to tell Gradle where 'app' is hidden
+          echo "include ':Approot:app'" > settings.gradle
           
-          echo "Targeting Gradle Build Root at: $TARGET_DIR"
-          echo "gradleRoot=$TARGET_DIR" >> $GITHUB_ENV
+          # Fix the gradlew file-clash: Generate a valid, executable root runner script 
+          # that targets the wrapper property configurations hidden in your folder
+          echo '#!/usr/bin/env bash' > ./gradlew_runner
+          echo 'exec gradle "$@"' >> ./gradlew_runner
+          chmod +x ./gradlew_runner
           
-          # Check if gradlew script exists as a regular file
-          if [ -f "$TARGET_DIR/gradlew" ]; then
-            echo "needsWrapper=false" >> $GITHUB_ENV
-          else
-            echo "needsWrapper=true" >> $GITHUB_ENV
-            # Clean up clashing directories named gradlew if they exist inside the target
-            if [ -d "$TARGET_DIR/gradlew" ]; then
-              echo "⚠️ Removing folder named gradlew to prevent wrapper task generation crashes"
-              rm -rf "$TARGET_DIR/gradlew"
-            fi
-          fi
-
+          # Pass paths down into the pipeline
+          echo "gradleRoot=${{ env.projectName }}" >> $GITHUB_ENV
+          
       - name: bypass root gradle validation
         run: |
           mkdir -p gradle/wrapper
@@ -82,8 +74,8 @@ jobs:
         run: |
           content=$(jq -r '.inputs.googleservices' $GITHUB_EVENT_PATH)
           echo "::add-mask::$content"
-          mkdir -p ${{ env.gradleRoot }}/${{ github.event.inputs.module }}
-          echo "$content" > ${{ env.gradleRoot }}/${{ github.event.inputs.module }}/google-services.json
+          mkdir -p ${{ env.gradleRoot }}/Approot/${{ github.event.inputs.module }}
+          echo "$content" > ${{ env.gradleRoot }}/Approot/${{ github.event.inputs.module }}/google-services.json
         
       - name: add local.properties
         if: ${{ github.event.inputs.localproperties != '' }}
@@ -103,30 +95,22 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           build-root-directory: ${{ env.gradleRoot }}
-
-      # FIX 2: Generate wrapper file cleanly with path verification
-      - name: inject missing gradle wrapper
-        if: ${{ env.needsWrapper == 'true' }}
-        run: |
-          cd ${{ env.gradleRoot }}
-          gradle wrapper --gradle-version 8.4
           
+      # FIX 2: Execute the custom build script pointing directly to the stitched component path ':Approot:app'
       - name: build
         if: ${{ github.event.inputs.sign == false || github.event.inputs.sign == 'false' }}
         run: |
           cd ${{ env.gradleRoot }}
-          chmod +x ./gradlew
-          bash ./gradlew ${{ github.event.inputs.module }}:assembleRelease
+          bash ./gradlew_runner :Approot:${{ github.event.inputs.module }}:assembleRelease
           
       - name: build & sign
         if: ${{ github.event.inputs.sign == true || github.event.inputs.sign == 'true' }}
         run: |
           cd ${{ env.gradleRoot }}
-          chmod +x ./gradlew
-          bash ./gradlew ${{ github.event.inputs.module }}:assembleRelease -Pandroid.injected.signing.store.file='${{ github.workspace }}/grab-keystore.jks' -Pandroid.injected.signing.store.password='grab-pwd' -Pandroid.injected.signing.key.alias='sign' -Pandroid.injected.signing.key.password='grab-pwd'
+          bash ./gradlew_runner :Approot:${{ github.event.inputs.module }}:assembleRelease -Pandroid.injected.signing.store.file='${{ github.workspace }}/grab-keystore.jks' -Pandroid.injected.signing.store.password='grab-pwd' -Pandroid.injected.signing.key.alias='sign' -Pandroid.injected.signing.key.password='grab-pwd'
           
       - name: upload
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.projectName }}${{ env.dirName }} - ${{ github.event.inputs.module }}
-          path: ${{ github.workspace }}/${{ env.gradleRoot }}/${{ github.event.inputs.module }}/build/outputs/apk/release/*.apk
+          name: ${{ env.projectName }}${{ env.dirName }} - outputs
+          path: ${{ github.workspace }}/${{ env.gradleRoot }}/Approot/${{ github.event.inputs.module }}/build/outputs/apk/release/*.apk
