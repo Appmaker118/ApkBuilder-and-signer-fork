@@ -58,14 +58,12 @@ jobs:
           echo "::add-mask::$content"
           echo "$content" > ${{ env.projectName }}${{ github.event.inputs.repo-dir }}/local.properties
         
-      # 1. Install Java without the built-in cache dependency check
       - name: setup java
         uses: actions/setup-java@v4
         with:
           distribution: "zulu"
           java-version: 17
           
-      # 2. Use the official Gradle Action to configure the subfolder cache cleanly
       - name: setup gradle cache
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -85,8 +83,9 @@ jobs:
           chmod +x gradlew
           ./gradlew ${{ github.event.inputs.module }}:assembleRelease -Pandroid.injected.signing.store.file='${{ github.workspace }}/grab-keystore.jks' -Pandroid.injected.signing.store.password='grab-pwd' -Pandroid.injected.signing.key.alias='sign' -Pandroid.injected.signing.key.password='grab-pwd'
           
+      # FIX: Restored the correct official GitHub upload namespace
       - name: upload
-        uses: actions/artifact-actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.projectName }}${{ env.dirName }} - ${{ github.event.inputs.module }}
           path: ${{ github.workspace }}/${{ env.projectName }}${{ github.event.inputs.repo-dir }}/${{ github.event.inputs.module }}/build/outputs/apk/release/*.apk
