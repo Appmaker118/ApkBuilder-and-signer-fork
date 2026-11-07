@@ -36,7 +36,6 @@ jobs:
           PROJECT_NAME=$(basename -s .git "${{ github.event.inputs.repo-url }}")
           echo "projectName=$PROJECT_NAME" >> $GITHUB_ENV
           echo "dirName=$(echo '${{ github.event.inputs.repo-dir }}' | sed -r 's/[/]+/ - /g')" >> $GITHUB_ENV
-          # Set the explicit path to where gradle lives for subsequent steps
           echo "gradleRoot=$PROJECT_NAME${{ github.event.inputs.repo-dir }}" >> $GITHUB_ENV
         
       - name: select commit
@@ -50,43 +49,44 @@ jobs:
         run: |
           content=$(jq -r '.inputs.googleservices' $GITHUB_EVENT_PATH)
           echo "::add-mask::$content"
-          echo "$content" > ${{ env.gradleRoot }}/${{ github.event.inputs.module }}/google-services.json
+          echo "$content" > ${{ env.projectName }}${{ github.event.inputs.repo-dir }}/${{ github.event.inputs.module }}/google-services.json
         
       - name: add local.properties
         if: ${{ github.event.inputs.localproperties != '' }}
         run: |
           content=$(jq -r '.inputs.localproperties' $GITHUB_EVENT_PATH)
           echo "::add-mask::$content"
-          echo "$content" > ${{ env.gradleRoot }}/local.properties
+          echo "$content" > ${{ env.projectName }}${{ github.event.inputs.repo-dir }}/local.properties
         
-      # FIX: Added build-path so the caching mechanism knows where your build files are
-      - name: setup
+      # 1. Install Java without the built-in cache dependency check
+      - name: setup java
         uses: actions/setup-java@v4
         with:
           distribution: "zulu"
-          java-version: 17 # Upgraded to 17 as modern Android Gradle Plugins require it
-          cache: "gradle"
-          cache-dependency-path: |
-            ${{ env.gradleRoot }}/**/*.gradle*
-            ${{ env.gradleRoot }}/**/gradle-wrapper.properties
+          java-version: 17
           
-      # FIX: Boolean inputs via workflow_dispatch are handled as literal booleans, not strings
+      # 2. Use the official Gradle Action to configure the subfolder cache cleanly
+      - name: setup gradle cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          build-root-directory: ${{ env.projectName }}${{ github.event.inputs.repo-dir }}
+          
       - name: build
         if: ${{ github.event.inputs.sign == false || github.event.inputs.sign == 'false' }}
         run: |
-          cd ${{ env.gradleRoot }}
+          cd ${{ env.projectName }}${{ github.event.inputs.repo-dir }}
           chmod +x gradlew
           ./gradlew ${{ github.event.inputs.module }}:assembleRelease
           
       - name: build & sign
         if: ${{ github.event.inputs.sign == true || github.event.inputs.sign == 'true' }}
         run: |
-          cd ${{ env.gradleRoot }}
+          cd ${{ env.projectName }}${{ github.event.inputs.repo-dir }}
           chmod +x gradlew
           ./gradlew ${{ github.event.inputs.module }}:assembleRelease -Pandroid.injected.signing.store.file='${{ github.workspace }}/grab-keystore.jks' -Pandroid.injected.signing.store.password='grab-pwd' -Pandroid.injected.signing.key.alias='sign' -Pandroid.injected.signing.key.password='grab-pwd'
           
       - name: upload
-        uses: actions/upload-artifact@v4
+        uses: actions/artifact-actions/upload-artifact@v4
         with:
           name: ${{ env.projectName }}${{ env.dirName }} - ${{ github.event.inputs.module }}
-          path: ${{ github.workspace }}/${{ env.gradleRoot }}/${{ github.event.inputs.module }}/build/outputs/apk/release/*.apk
+          path: ${{ github.workspace }}/${{ env.projectName }}${{ github.event.inputs.repo-dir }}/${{ github.event.inputs.module }}/build/outputs/apk/release/*.apk
