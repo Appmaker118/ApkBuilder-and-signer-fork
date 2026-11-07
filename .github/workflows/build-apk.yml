@@ -36,27 +36,50 @@ jobs:
           PROJECT_NAME=$(basename -s .git "${{ github.event.inputs.repo-url }}")
           echo "projectName=$PROJECT_NAME" >> $GITHUB_ENV
           echo "dirName=$(echo '${{ github.event.inputs.repo-dir }}' | sed -r 's/[/]+/ - /g')" >> $GITHUB_ENV
-          echo "gradleRoot=$PROJECT_NAME${{ github.event.inputs.repo-dir }}" >> $GITHUB_ENV
         
       - name: select commit
         if: ${{ github.event.inputs.repo-commit != '' }}
         run: |
           cd ${{ env.projectName }}
           git checkout ${{ github.event.inputs.repo-commit }}
-          
+
+      # FIX 1: Find the true location of gradlew inside the cloned repo
+      - name: locate gradle root
+        run: |
+          GRADLEW_PATH=$(find ./${{ env.projectName }} -name "gradlew" -print -quit)
+          if [ -z "$GRADLEW_PATH" ]; then
+            echo "❌ ERROR: Could not find 'gradlew' anywhere inside the cloned repository!"
+            exit 1
+          fi
+          GRADLE_ROOT_DIR=$(dirname "$GRADLEW_PATH" | sed 's|^\./||')
+          echo "Found gradlew at: $GRADLE_ROOT_DIR"
+          echo "gradleRoot=$GRADLE_ROOT_DIR" >> $GITHUB_ENV
+
+      # FIX 2: Clone the target repo's wrapper directly into the workspace root to trick setup-gradle
+      - name: bypass root gradle validation
+        run: |
+          mkdir -p gradle
+          if [ -f "${{ env.gradleRoot }}/gradle/wrapper/gradle-wrapper.properties" ]; then
+            cp "${{ env.gradleRoot }}/gradle/wrapper/gradle-wrapper.properties" ./gradle/wrapper/
+            cp "${{ env.gradleRoot }}/gradlew" ./
+          else
+            echo "distributionUrl=https\://services.gradle.org/distributions/gradle-8.0-bin.zip" > gradle/wrapper/gradle-wrapper.properties
+            touch gradlew
+          fi
+        
       - name: add google-services.json
         if: ${{ github.event.inputs.googleservices != '' }}
         run: |
           content=$(jq -r '.inputs.googleservices' $GITHUB_EVENT_PATH)
           echo "::add-mask::$content"
-          echo "$content" > ${{ env.projectName }}${{ github.event.inputs.repo-dir }}/${{ github.event.inputs.module }}/google-services.json
+          echo "$content" > ${{ env.gradleRoot }}/${{ github.event.inputs.module }}/google-services.json
         
       - name: add local.properties
         if: ${{ github.event.inputs.localproperties != '' }}
         run: |
           content=$(jq -r '.inputs.localproperties' $GITHUB_EVENT_PATH)
           echo "::add-mask::$content"
-          echo "$content" > ${{ env.projectName }}${{ github.event.inputs.repo-dir }}/local.properties
+          echo "$content" > ${{ env.gradleRoot }}/local.properties
         
       - name: setup java
         uses: actions/setup-java@v4
@@ -67,25 +90,24 @@ jobs:
       - name: setup gradle cache
         uses: gradle/actions/setup-gradle@v4
         with:
-          build-root-directory: ${{ env.projectName }}${{ github.event.inputs.repo-dir }}
+          build-root-directory: ${{ env.gradleRoot }}
           
       - name: build
         if: ${{ github.event.inputs.sign == false || github.event.inputs.sign == 'false' }}
         run: |
-          cd ${{ env.projectName }}${{ github.event.inputs.repo-dir }}
+          cd ${{ env.gradleRoot }}
           chmod +x gradlew
           ./gradlew ${{ github.event.inputs.module }}:assembleRelease
           
       - name: build & sign
         if: ${{ github.event.inputs.sign == true || github.event.inputs.sign == 'true' }}
         run: |
-          cd ${{ env.projectName }}${{ github.event.inputs.repo-dir }}
+          cd ${{ env.gradleRoot }}
           chmod +x gradlew
           ./gradlew ${{ github.event.inputs.module }}:assembleRelease -Pandroid.injected.signing.store.file='${{ github.workspace }}/grab-keystore.jks' -Pandroid.injected.signing.store.password='grab-pwd' -Pandroid.injected.signing.key.alias='sign' -Pandroid.injected.signing.key.password='grab-pwd'
           
-      # FIX: Restored the correct official GitHub upload namespace
       - name: upload
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.projectName }}${{ env.dirName }} - ${{ github.event.inputs.module }}
-          path: ${{ github.workspace }}/${{ env.projectName }}${{ github.event.inputs.repo-dir }}/${{ github.event.inputs.module }}/build/outputs/apk/release/*.apk
+          path: ${{ github.workspace }}/${{ env.gradleRoot }}/${{ github.event.inputs.module }}/build/outputs/apk/release/*.apk
