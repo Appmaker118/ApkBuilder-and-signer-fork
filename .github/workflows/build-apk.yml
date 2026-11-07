@@ -43,33 +43,35 @@ jobs:
           cd ${{ env.projectName }}
           git checkout ${{ github.event.inputs.repo-commit }}
 
+      # FIX 1: Locate or generate a fallback gradle directory structure safely
       - name: locate gradle root
         run: |
-          GRADLEW_PATH=$(find ./${{ env.projectName }} -maxdepth 3 -type f -name "gradlew" -print -quit)
+          GRADLEW_PATH=$(find ./${{ env.projectName }} -maxdepth 4 -type f -name "gradlew" -print -quit)
           if [ -z "$GRADLEW_PATH" ]; then
-            echo "❌ ERROR: Could not find a 'gradlew' file anywhere inside the cloned repository!"
-            exit 1
+            echo "⚠️ WARNING: 'gradlew' wrapper file not found in the cloned repository."
+            echo "Using fallback target directory: ${{ env.projectName }}${{ github.event.inputs.repo-dir }}"
+            echo "gradleRoot=${{ env.projectName }}${{ github.event.inputs.repo-dir }}" >> $GITHUB_ENV
+            echo "needsWrapper=true" >> $GITHUB_ENV
+          else
+            GRADLE_ROOT_DIR=$(dirname "$GRADLEW_PATH" | sed 's|^\./||')
+            echo "Found gradlew at: $GRADLE_ROOT_DIR"
+            echo "gradleRoot=$GRADLE_ROOT_DIR" >> $GITHUB_ENV
+            echo "needsWrapper=false" >> $GITHUB_ENV
           fi
-          GRADLE_ROOT_DIR=$(dirname "$GRADLEW_PATH" | sed 's|^\./||')
-          echo "Found gradlew at: $GRADLE_ROOT_DIR"
-          echo "gradleRoot=$GRADLE_ROOT_DIR" >> $GITHUB_ENV
 
+      # FIX 2: Bypasses the workspace root validations for the internal cache runner
       - name: bypass root gradle validation
         run: |
           mkdir -p gradle/wrapper
-          if [ -f "${{ env.gradleRoot }}/gradle/wrapper/gradle-wrapper.properties" ]; then
-            cp "${{ env.gradleRoot }}/gradle/wrapper/gradle-wrapper.properties" ./gradle/wrapper/
-            cp "${{ env.gradleRoot }}/gradlew" ./ 2>/dev/null || touch gradlew
-          else
-            echo "distributionUrl=https\://services.gradle.org/distributions/gradle-8.0-bin.zip" > gradle/wrapper/gradle-wrapper.properties
-            touch gradlew
-          fi
+          echo "distributionUrl=https\://services.gradle.org/distributions/gradle-8.4-bin.zip" > gradle/wrapper/gradle-wrapper.properties
+          touch gradlew
         
       - name: add google-services.json
         if: ${{ github.event.inputs.googleservices != '' }}
         run: |
           content=$(jq -r '.inputs.googleservices' $GITHUB_EVENT_PATH)
           echo "::add-mask::$content"
+          mkdir -p ${{ env.gradleRoot }}/${{ github.event.inputs.module }}
           echo "$content" > ${{ env.gradleRoot }}/${{ github.event.inputs.module }}/google-services.json
         
       - name: add local.properties
@@ -77,6 +79,7 @@ jobs:
         run: |
           content=$(jq -r '.inputs.localproperties' $GITHUB_EVENT_PATH)
           echo "::add-mask::$content"
+          mkdir -p ${{ env.gradleRoot }}
           echo "$content" > ${{ env.gradleRoot }}/local.properties
         
       - name: setup java
@@ -89,8 +92,14 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           build-root-directory: ${{ env.gradleRoot }}
+
+      # FIX 3: Automatically injects a brand new gradle runtime wrapper if the repository lacks one
+      - name: inject missing gradle wrapper
+        if: ${{ env.needsWrapper == 'true' }}
+        run: |
+          cd ${{ env.gradleRoot }}
+          gradle wrapper --gradle-version 8.4
           
-      # FIX: Ensure we call bash explicitly on the file path to completely bypass the "Is a directory" routing issue
       - name: build
         if: ${{ github.event.inputs.sign == false || github.event.inputs.sign == 'false' }}
         run: |
@@ -98,7 +107,6 @@ jobs:
           chmod +x ./gradlew
           bash ./gradlew ${{ github.event.inputs.module }}:assembleRelease
           
-      # FIX: Ensure we call bash explicitly on the file path to completely bypass the "Is a directory" routing issue
       - name: build & sign
         if: ${{ github.event.inputs.sign == true || github.event.inputs.sign == 'true' }}
         run: |
