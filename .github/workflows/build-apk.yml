@@ -21,20 +21,23 @@ on:
       sign:
         type: boolean
         description: 'sign apk'
-        default: 'true'
+        default: true
 
 jobs:
   main:
     runs-on: ubuntu-latest
     steps:
       - name: checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         
       - name: clone
         run: |
           git clone ${{ github.event.inputs.repo-url }}
-          echo "projectName=$(basename -s .git ${{ github.event.inputs.repo-url }})" >> $GITHUB_ENV
-          echo "dirName=$(echo ${{ github.event.inputs.repo-dir }} | sed -r 's/[/]+/ - /g')" >> $GITHUB_ENV
+          PROJECT_NAME=$(basename -s .git "${{ github.event.inputs.repo-url }}")
+          echo "projectName=$PROJECT_NAME" >> $GITHUB_ENV
+          echo "dirName=$(echo '${{ github.event.inputs.repo-dir }}' | sed -r 's/[/]+/ - /g')" >> $GITHUB_ENV
+          # Set the explicit path to where gradle lives for subsequent steps
+          echo "gradleRoot=$PROJECT_NAME${{ github.event.inputs.repo-dir }}" >> $GITHUB_ENV
         
       - name: select commit
         if: ${{ github.event.inputs.repo-commit != '' }}
@@ -47,33 +50,38 @@ jobs:
         run: |
           content=$(jq -r '.inputs.googleservices' $GITHUB_EVENT_PATH)
           echo "::add-mask::$content"
-          echo "$content" > ${{ env.projectName }}${{ github.event.inputs.repo-dir }}/${{ github.event.inputs.module }}/google-services.json
+          echo "$content" > ${{ env.gradleRoot }}/${{ github.event.inputs.module }}/google-services.json
         
       - name: add local.properties
         if: ${{ github.event.inputs.localproperties != '' }}
         run: |
           content=$(jq -r '.inputs.localproperties' $GITHUB_EVENT_PATH)
           echo "::add-mask::$content"
-          echo "$content" > ${{ env.projectName }}${{ github.event.inputs.repo-dir }}/local.properties
+          echo "$content" > ${{ env.gradleRoot }}/local.properties
         
+      # FIX: Added build-path so the caching mechanism knows where your build files are
       - name: setup
-        uses: actions/setup-java@v2
+        uses: actions/setup-java@v4
         with:
           distribution: "zulu"
-          java-version: 11
+          java-version: 17 # Upgraded to 17 as modern Android Gradle Plugins require it
           cache: "gradle"
+          cache-dependency-path: |
+            ${{ env.gradleRoot }}/**/*.gradle*
+            ${{ env.gradleRoot }}/**/gradle-wrapper.properties
           
+      # FIX: Boolean inputs via workflow_dispatch are handled as literal booleans, not strings
       - name: build
-        if: ${{ github.event.inputs.sign == 'false' }}
+        if: ${{ github.event.inputs.sign == false || github.event.inputs.sign == 'false' }}
         run: |
-          cd ${{ env.projectName }}${{ github.event.inputs.repo-dir }}
+          cd ${{ env.gradleRoot }}
           chmod +x gradlew
           ./gradlew ${{ github.event.inputs.module }}:assembleRelease
           
       - name: build & sign
-        if: ${{ github.event.inputs.sign == 'true' }}
+        if: ${{ github.event.inputs.sign == true || github.event.inputs.sign == 'true' }}
         run: |
-          cd ${{ env.projectName }}${{ github.event.inputs.repo-dir }}
+          cd ${{ env.gradleRoot }}
           chmod +x gradlew
           ./gradlew ${{ github.event.inputs.module }}:assembleRelease -Pandroid.injected.signing.store.file='${{ github.workspace }}/grab-keystore.jks' -Pandroid.injected.signing.store.password='grab-pwd' -Pandroid.injected.signing.key.alias='sign' -Pandroid.injected.signing.key.password='grab-pwd'
           
@@ -81,6 +89,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.projectName }}${{ env.dirName }} - ${{ github.event.inputs.module }}
-          path: ${{ github.workspace }}/${{ env.projectName }}${{ github.event.inputs.repo-dir }}/${{ github.event.inputs.module }}/build/outputs/apk/release/*.apk 
-          
-          
+          path: ${{ github.workspace }}/${{ env.gradleRoot }}/${{ github.event.inputs.module }}/build/outputs/apk/release/*.apk
