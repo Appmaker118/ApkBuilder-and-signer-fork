@@ -30,38 +30,42 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
         
-      - name: clone
+      - name: clone target repository
+        id: clone_step
         run: |
           git clone ${{ github.event.inputs.repo-url }}
           PROJECT_NAME=$(basename -s .git "${{ github.event.inputs.repo-url }}")
-          echo "projectName=$PROJECT_NAME" >> $GITHUB_ENV
-          echo "dirName=$(echo '${{ github.event.inputs.repo-dir }}' | sed -r 's/[/]+/ - /g')" >> $GITHUB_ENV
-        
+          DIR_NAME=$(echo '${{ github.event.inputs.repo-dir }}' | sed -r 's/[/]+/ - /g')
+          
+          # Force export using output maps to ensure global visibility
+          echo "project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
+          echo "dir_name=$DIR_NAME" >> $GITHUB_OUTPUT
+          
       - name: select commit
         if: ${{ github.event.inputs.repo-commit != '' }}
         run: |
-          cd ${{ env.projectName }}
+          cd ${{ steps.clone_step.outputs.project_name }}
           git checkout ${{ github.event.inputs.repo-commit }}
 
-      # FIX 1: Generate missing settings.gradle to cleanly bind 'Approot/app' as a valid structural module
-      # Also safely normalise your custom 'gradlew/' distribution directory structure
-      # We force use of the workspace root directory for the build context
-       Kakao:
       - name: prepare environment and stitch components
         run: |
-          cd ${{ env.projectName }}
+          cd ${{ steps.clone_step.outputs.project_name }}
           
-          # Inject settings.gradle at root to tell Gradle where 'app' is hidden
+          # 1. Inject missing settings.gradle to register the inner module structure
           echo "include ':Approot:app'" > settings.gradle
           
-          # Fix the gradlew file-clash: Generate a valid, executable root runner script 
-          # that targets the wrapper property configurations hidden in your folder
-          echo '#!/usr/bin/env bash' > ./gradlew_runner
-          echo 'exec gradle "$@"' >> ./gradlew_runner
-          chmod +x ./gradlew_runner
+          # 2. Fix your custom gradlew/ folder setup: convert it into a root script file
+          # by copying the distribution properties out of the folder into standard locations
+          mkdir -p gradle
+          if [ -d "gradlew" ]; then
+            cp -r gradlew/* gradle/ 2>/dev/null || true
+            rm -rf gradlew
+          fi
           
-          # Pass paths down into the pipeline
-          echo "gradleRoot=${{ env.projectName }}" >> $GITHUB_ENV
+          # 3. Generate a standard executable runner script at the root
+          echo '#!/usr/bin/env bash' > ./gradlew
+          echo 'exec gradle "$@"' >> ./gradlew
+          chmod +x ./gradlew
           
       - name: bypass root gradle validation
         run: |
@@ -74,16 +78,16 @@ jobs:
         run: |
           content=$(jq -r '.inputs.googleservices' $GITHUB_EVENT_PATH)
           echo "::add-mask::$content"
-          mkdir -p ${{ env.gradleRoot }}/Approot/${{ github.event.inputs.module }}
-          echo "$content" > ${{ env.gradleRoot }}/Approot/${{ github.event.inputs.module }}/google-services.json
+          mkdir -p ${{ steps.clone_step.outputs.project_name }}/Approot/${{ github.event.inputs.module }}
+          echo "$content" > ${{ steps.clone_step.outputs.project_name }}/Approot/${{ github.event.inputs.module }}/google-services.json
         
       - name: add local.properties
         if: ${{ github.event.inputs.localproperties != '' }}
         run: |
           content=$(jq -r '.inputs.localproperties' $GITHUB_EVENT_PATH)
           echo "::add-mask::$content"
-          mkdir -p ${{ env.gradleRoot }}
-          echo "$content" > ${{ env.gradleRoot }}/local.properties
+          mkdir -p ${{ steps.clone_step.outputs.project_name }}
+          echo "$content" > ${{ steps.clone_step.outputs.project_name }}/local.properties
         
       - name: setup java
         uses: actions/setup-java@v4
@@ -94,23 +98,24 @@ jobs:
       - name: setup gradle cache
         uses: gradle/actions/setup-gradle@v4
         with:
-          build-root-directory: ${{ env.gradleRoot }}
+          build-root-directory: ${{ steps.clone_step.outputs.project_name }}
           
-      # FIX 2: Execute the custom build script pointing directly to the stitched component path ':Approot:app'
-      - name: build
+      # FIX: Changed conditional evaluation to support literal boolean flags and string flags safely
+      # Targeted the correct stitched module path ':Approot:app'
+      - name: build unsigned
         if: ${{ github.event.inputs.sign == false || github.event.inputs.sign == 'false' }}
         run: |
-          cd ${{ env.gradleRoot }}
-          bash ./gradlew_runner :Approot:${{ github.event.inputs.module }}:assembleRelease
+          cd ${{ steps.clone_step.outputs.project_name }}
+          ./gradlew :Approot:${{ github.event.inputs.module }}:assembleRelease
           
-      - name: build & sign
+      - name: build and sign
         if: ${{ github.event.inputs.sign == true || github.event.inputs.sign == 'true' }}
         run: |
-          cd ${{ env.gradleRoot }}
-          bash ./gradlew_runner :Approot:${{ github.event.inputs.module }}:assembleRelease -Pandroid.injected.signing.store.file='${{ github.workspace }}/grab-keystore.jks' -Pandroid.injected.signing.store.password='grab-pwd' -Pandroid.injected.signing.key.alias='sign' -Pandroid.injected.signing.key.password='grab-pwd'
+          cd ${{ steps.clone_step.outputs.project_name }}
+          ./gradlew :Approot:${{ github.event.inputs.module }}:assembleRelease -Pandroid.injected.signing.store.file='${{ github.workspace }}/grab-keystore.jks' -Pandroid.injected.signing.store.password='grab-pwd' -Pandroid.injected.signing.key.alias='sign' -Pandroid.injected.signing.key.password='grab-pwd'
           
-      - name: upload
+      - name: upload apk artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.projectName }}${{ env.dirName }} - outputs
-          path: ${{ github.workspace }}/${{ env.gradleRoot }}/Approot/${{ github.event.inputs.module }}/build/outputs/apk/release/*.apk
+          name: ${{ steps.clone_step.outputs.project_name }}${{ steps.clone_step.outputs.dir_name }} - outputs
+          path: ${{ github.workspace }}/${{ steps.clone_step.outputs.project_name }}/Approot/${{ github.event.inputs.module }}/build/outputs/apk/release/*.apk
