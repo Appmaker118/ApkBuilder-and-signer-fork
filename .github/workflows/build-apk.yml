@@ -43,7 +43,6 @@ jobs:
           cd ${{ env.projectName }}
           git checkout ${{ github.event.inputs.repo-commit }}
 
-      # FIX 1: Find the true location of gradlew inside the cloned repo
       - name: locate gradle root
         run: |
           GRADLEW_PATH=$(find ./${{ env.projectName }} -name "gradlew" -print -quit)
@@ -55,10 +54,10 @@ jobs:
           echo "Found gradlew at: $GRADLE_ROOT_DIR"
           echo "gradleRoot=$GRADLE_ROOT_DIR" >> $GITHUB_ENV
 
-      # FIX 2: Clone the target repo's wrapper directly into the workspace root to trick setup-gradle
+      # FIX: Creates directory path in one go
       - name: bypass root gradle validation
         run: |
-          mkdir -p gradle
+          mkdir -p gradle/wrapper
           if [ -f "${{ env.gradleRoot }}/gradle/wrapper/gradle-wrapper.properties" ]; then
             cp "${{ env.gradleRoot }}/gradle/wrapper/gradle-wrapper.properties" ./gradle/wrapper/
             cp "${{ env.gradleRoot }}/gradlew" ./
