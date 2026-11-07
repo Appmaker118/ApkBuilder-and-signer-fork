@@ -37,7 +37,6 @@ jobs:
           PROJECT_NAME=$(basename -s .git "${{ github.event.inputs.repo-url }}")
           DIR_NAME=$(echo '${{ github.event.inputs.repo-dir }}' | sed -r 's/[/]+/ - /g')
           
-          # Force export using output maps to ensure global visibility
           echo "project_name=$PROJECT_NAME" >> $GITHUB_OUTPUT
           echo "dir_name=$DIR_NAME" >> $GITHUB_OUTPUT
           
@@ -51,18 +50,17 @@ jobs:
         run: |
           cd ${{ steps.clone_step.outputs.project_name }}
           
-          # 1. Inject missing settings.gradle to register the inner module structure
+          # Inject settings.gradle at root to tell Gradle where 'app' is hidden
           echo "include ':Approot:app'" > settings.gradle
           
-          # 2. Fix your custom gradlew/ folder setup: convert it into a root script file
-          # by copying the distribution properties out of the folder into standard locations
+          # Fix the gradlew file-clash: convert it into a structural gradle directory framework
           mkdir -p gradle
           if [ -d "gradlew" ]; then
             cp -r gradlew/* gradle/ 2>/dev/null || true
             rm -rf gradlew
           fi
           
-          # 3. Generate a standard executable runner script at the root
+          # Generate a clean runtime executable script wrapper at root
           echo '#!/usr/bin/env bash' > ./gradlew
           echo 'exec gradle "$@"' >> ./gradlew
           chmod +x ./gradlew
@@ -100,22 +98,25 @@ jobs:
         with:
           build-root-directory: ${{ steps.clone_step.outputs.project_name }}
           
-      # FIX: Changed conditional evaluation to support literal boolean flags and string flags safely
-      # Targeted the correct stitched module path ':Approot:app'
+      # FIX: Fallback to the broad global 'assemble' task which works on libraries and multiplatform apps
       - name: build unsigned
         if: ${{ github.event.inputs.sign == false || github.event.inputs.sign == 'false' }}
         run: |
           cd ${{ steps.clone_step.outputs.project_name }}
-          ./gradlew :Approot:${{ github.event.inputs.module }}:assembleRelease
+          ./gradlew :Approot:${{ github.event.inputs.module }}:assemble
           
+      # FIX: Fallback to the broad global 'assemble' task which works on libraries and multiplatform apps
       - name: build and sign
         if: ${{ github.event.inputs.sign == true || github.event.inputs.sign == 'true' }}
         run: |
           cd ${{ steps.clone_step.outputs.project_name }}
-          ./gradlew :Approot:${{ github.event.inputs.module }}:assembleRelease -Pandroid.injected.signing.store.file='${{ github.workspace }}/grab-keystore.jks' -Pandroid.injected.signing.store.password='grab-pwd' -Pandroid.injected.signing.key.alias='sign' -Pandroid.injected.signing.key.password='grab-pwd'
+          ./gradlew :Approot:${{ github.event.inputs.module }}:assemble -Pandroid.injected.signing.store.file='${{ github.workspace }}/grab-keystore.jks' -Pandroid.injected.signing.store.password='grab-pwd' -Pandroid.injected.signing.key.alias='sign' -Pandroid.injected.signing.key.password='grab-pwd'
           
+      # FIX: Widened file lookup matchers to capture any generated .apk or library binaries safely
       - name: upload apk artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.clone_step.outputs.project_name }}${{ steps.clone_step.outputs.dir_name }} - outputs
-          path: ${{ github.workspace }}/${{ steps.clone_step.outputs.project_name }}/Approot/${{ github.event.inputs.module }}/build/outputs/apk/release/*.apk
+          path: |
+            ${{ github.workspace }}/${{ steps.clone_step.outputs.project_name }}/**/build/outputs/**/*.apk
+            ${{ github.workspace }}/${{ steps.clone_step.outputs.project_name }}/**/build/outputs/**/*.aar
